@@ -1,0 +1,383 @@
+---
+title: "R_AS_GIS"
+author: "Katharina Kaelin"
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file,
+ encoding=encoding,
+ output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    theme: lumen
+    highlight: tango
+---
+
+<style type="text/css">
+.main-container {
+  max-width: 1800px;
+  margin-left: 0;
+  margin-right: auto;
+}
+blockquote {
+    padding: 10px 20px;
+    margin: 0 0 20px;
+    font-size: 14px;
+    border-left: 5px solid #eee;
+}
+
+h1.title {
+  font-size: 38px;
+  color: #000000;
+  }
+  
+h1 { /* Header 1 */
+  font-size: 28px;
+  color: #0033cc;
+}
+
+h2 { /* Header 2 */
+    font-size: 28px;
+	color: #0099ff
+}
+
+h3 { /* Header 3 */
+    font-size: 14px;
+	color: #6600cc
+}
+</style>
+
+# 1. R setup
+
+```{r setup, echo=T, results='hide', message=FALSE, warning=FALSE}
+
+# import libraries
+library(tidyverse) # collection of R packages designed for data science
+# vector
+library(sf) ## GIS vector library new
+library(sp) ## GIS vector library old
+# raster
+library(raster) ## GIS raster library 
+# visualization
+library(RColorBrewer) ## ready-to-use color palettes for creating beautiful graphics
+library(rmapshaper) ## used to simplify geometries
+library(tmap) ## easy to use approach to to create theamtic maps
+library(mapview) ## interactive visualisations of spatial data
+library(classInt) ## methods for choosing univariate class intervals for mapping or other graphics purposes
+
+# number formatting
+options(scipen = 1000000)
+options(digits = 6)
+
+```
+
+
+# 2. Import data
+
+## 2.1 Public transportation stops
+
+The public transportation stops dataset was downloded here: <br>
+https://data.geo.admin.ch/ch.bav.haltestellen-oev/data.zip <br>
+Release date: 06-08-2018
+Format: csv
+
+```{r, collapse=TRUE, warning=FALSE,  message=FALSE}
+# Import csv as df
+point_df <- read.csv("./Data_in/Betriebspunkt.csv", stringsAsFactors=FALSE, header= TRUE) 
+
+# Select desired attributes
+point_df <- point_df %>%
+  dplyr::select(point_ID = "Nummer", point_MunNr = "GdeNummer", "y_Koord_Ost", "x_Koord_Nord")
+
+# Convert df to spatial df
+point_sf <- sf::st_as_sf(x = point_df, coords = c("y_Koord_Ost", "x_Koord_Nord"), crs= 2056) # epsg:2056 is the ID of LV95
+
+# Check data
+class(point_df)
+point_df[1:5,]
+
+class(point_sf)
+point_sf[1:5,]
+```
+
+
+
+## 2.2 Municipality
+
+The municipality dataset was downloded here: <br>
+https://shop.swisstopo.admin.ch/de/products/landscape/boundaries3D <br>
+Release date: 2019
+Format: Shapefile
+
+```{r, collapse=TRUE, warning=FALSE,  message=FALSE}
+# Import shp as spatial df
+poly_sf <- sf::st_read("./Data_in/swissBOUNDARIES3D_1_3_TLM_HOHEITSGEBIET.shp", stringsAsFactors = FALSE, crs=2056)
+
+# Select desired attributes
+poly_sf <- poly_sf %>%
+  dplyr::select(poly_MunNr = "BFS_NUMMER", poly_CanNr = "KANTONSNUM") %>%
+  dplyr::group_by(poly_MunNr)%>%
+  dplyr::summarize(
+    poly_CanNr = unique(poly_CanNr)
+    ) %>%
+  st_zm(drop =  TRUE)
+
+# Check data
+class(poly_sf)
+poly_sf[1:5,]
+
+# Plot imported data: R base plot
+plot(st_geometry(point_sf), pch = 19, col="blue", cex = 0.5)
+plot(st_geometry(poly_sf), add = TRUE)
+legend(x=2750000,y=1310000,
+       c("Public Transportation Stops","Muncipality"),
+       lty=c(NA,1),
+       pch=c(19,NA),
+       cex=.8, 
+       col=c("blue","black"),
+       bty='n'
+       )
+
+```
+
+# 3. Calculate density of public transportation stops per municipality
+
+```{r, collapse=TRUE, warning=FALSE,  message=FALSE}
+# Spatial Join: instead of joining dataframes via an equal ID we join data- frames based on an equal location. 
+spjoin_sf <- sf::st_join(point_sf, poly_sf)
+
+spjoin_sf
+
+# Check: Did the Federal Office of Transport use the same municiaplity boundaries as we did in order to add the municipality inforamtion to the dataset (point_sf$point_MunNr)?
+spjoin_sf_check <-  spjoin_sf %>%
+  dplyr::select(poly_MunNr,point_MunNr) %>%
+  dplyr::mutate (check = (spjoin_sf$poly_MunNr == spjoin_sf$point_MunNr)) %>%
+  dplyr::arrange(check)
+
+table(spjoin_sf_check$check) #462/26408*100 = 1.75%
+# ... no, they did not. Probably they used the same dataset with a different reference date.   
+
+# Density calculation
+
+# > 1. Count points per polygon
+point_count <- spjoin_sf %>%
+   dplyr::group_by(poly_MunNr) %>%
+   dplyr::summarise(count=n())
+
+poly_sf <- poly_sf %>%
+  dplyr::left_join(point_count %>% st_set_geometry(NULL) , by = c("poly_MunNr" ))
+
+# > 2. Calculate area of polygon
+poly_sf <- poly_sf %>%
+  dplyr::mutate(poly_area_m2 =as.vector(st_area(.)))
+
+# > 3. Calculate density: count/area
+poly_sf$density <- poly_sf$count / poly_sf$poly_area_m2 * 1000000
+
+# Plot result: tmap
+# > tmap static
+tmap::tmap_mode("plot")
+#tmap_mode("view")
+tmap::tm_shape(poly_sf) +
+  tmap::tm_fill("density",
+          title="Density of public transportation stops",
+          style="quantile", 
+          palette="BuGn", 
+          colorNA = "blue")  +
+  tmap::tm_layout(frame = FALSE)
+
+```
+
+# 4. Calculate density of public transportation stops per canton
+
+```{r, collapse=TRUE, warning=FALSE,  message=FALSE}
+# group_by poly_CanNr
+canton_sf <- poly_sf %>%
+  dplyr::select(poly_CanNr,  count, poly_area_m2) %>%
+  dplyr::group_by(poly_CanNr)%>%
+  dplyr::summarize(
+    count = sum(count, na.rm = TRUE),
+    poly_area_m2 = sum(poly_area_m2,  na.rm = TRUE)
+    )  %>%
+  dplyr::mutate(
+    density = round((count/poly_area_m2 * 1000000),1)
+    )
+
+# Plot result: ggplot
+# get quantile breaks. Add .00001 offset to catch the lowest value
+breaks_qt <- classInt::classIntervals(c(min(canton_sf$density) - .00001, canton_sf$density), n = 4, style = "quantile")
+breaks_qt$brks
+
+# use cut to divice density into intervals and code them according to which interval they are in.
+canton_sf <- canton_sf %>%
+   dplyr::mutate(mycat = cut(density, breaks_qt$brks)) %>%
+   dplyr::arrange(density)
+canton_sf$mycat
+
+ggplot2::ggplot(canton_sf) + 
+    geom_sf(aes(fill=mycat)) +
+    scale_fill_brewer(palette = "BuGn", name = "Density of public\ntransportation stops")  + 
+    coord_sf(datum=NA) + # no coordinate grid
+    theme_bw() +# background = white
+    theme(
+      panel.border = element_blank() # no border line around plot
+      )
+  
+
+```
+
+# 5. Filter by canton: Freiburg 
+
+```{r, collapse=TRUE, warning=FALSE,  message=FALSE}
+# Filter poly_CanNr == 10 
+point_freiburg<- spjoin_sf %>%
+    dplyr::filter(poly_CanNr == 10)
+
+canton_freiburg <- canton_sf %>%
+  dplyr::filter(poly_CanNr == 10)
+
+# Plot result: R base plot
+plot(st_geometry(point_freiburg), pch = 19, col="blue", cex = 0.1)
+plot(st_geometry(canton_freiburg), lwd = 2, add = TRUE)
+legend(x=2587000 ,y=1206350,
+       c("Public Transportation Stops","Muncipality"),
+       lty=c(NA,1),
+       pch=c(19,NA),
+       cex=.8, 
+       col=c("blue","black"),
+       bty='n'
+       )
+# This plot contains a lot of data as it contains a lot of coordinates. Do we really need this level of detail for our visualization? Often we don't. 
+
+# Reduce level of detail
+canton_freiburg_gen <- rmapshaper::ms_simplify(canton_freiburg, keep = 0.01, keep_shapes = TRUE)
+plot(st_geometry(point_freiburg), pch = 19, col="blue", cex = 0.1)
+plot(st_geometry(canton_freiburg_gen), lwd = 2, add = TRUE)
+legend(x=2587000 ,y=1206350,
+       c("Public Transportation Stops","Muncipality"),
+       lty=c(NA,1),
+       pch=c(19,NA),
+       cex=.8, 
+       col=c("blue","black"),
+       bty='n'
+       )
+
+
+```
+
+
+# 6. Calculate number of public transportation stops per raster cells
+
+```{r, collapse=TRUE, warning=FALSE,  message=FALSE}
+# sf to sp
+point_sp <- as(point_sf, Class = "Spatial")
+
+# Create grid with raster cell size 10'000 x 10'000m
+boundingbox_point_sp = as(extent(point_sp), "SpatialPolygons")
+r = raster::raster(boundingbox_point_sp, resolution = 10000)
+crs(r) <- CRS('+init=EPSG:2056')
+
+# Count points per raster cell 
+rc = raster::rasterize(point_sp@coords, r, fun = "count")
+
+rc
+
+# Plot result: R base plot
+raster::plot(rc, 
+     bty="n", 
+     box=FALSE, 
+     xaxt = "n", 
+     yaxt = "n", 
+     legend.args = list(text = 'Count', cex = 0.8, line = 1, font = 2),
+      main="Number of public transportation stops per raster cell")
+# As many as 8 percent of men and 0.5 percent of women with Northern European ancestry have the common form of red-green color blindness. Thus,  red and green colours should not be used together (http://east.nei.nih.gov:443/learn-about-eye-health/eye-conditions-and-diseases/color-blindness)
+
+my.palette = RColorBrewer::brewer.pal(n = 9, name = "YlGnBu")
+raster::plot(rc, 
+             col = my.palette, 
+             bty="n", 
+             box=FALSE,  
+             xaxt = "n", yaxt = "n", 
+             legend.args = list(text = 'Count', cex = 0.8, line = 1, font = 2), 
+             main="Number of public transportation stops per raster cell")
+```
+
+# 7. Count number of publication stops per defined area
+
+```{r, collapse=TRUE, warning=FALSE,  message=FALSE}
+# Somdbody asked us to calculate the number of publication stops 500m around this coordinate: 
+N <- 47.37861
+E <- 8.53768
+
+# Create df
+mypoint_df <-  data.frame(N,E)
+
+# Convert df to spatial df
+mypoint_sf <- st_as_sf(x = mypoint_df, coords = c("E", "N"), crs= 4326) %>%  #epsg:4326 is the ID of WGS84
+  sf::st_transform(2056)
+
+# Calculate area 500 m around mypoint_sf
+myarea_sf <- mypoint_sf %>%
+  sf::st_buffer(500) %>%
+  dplyr::mutate(name = "MyArea")
+
+# Count points per myarea_sf
+spjoin_sf <- st_join(point_sf, myarea_sf)
+
+point_count  <- spjoin_sf %>% 
+  dplyr::group_by(name) %>%
+  dplyr::summarise(count=n())
+
+point_count
+
+# Plot result: R base plot
+plot(st_geometry(myarea_sf, col="grey",border="black"))
+plot(st_geometry(mypoint_sf), pch = 19, col="blue", cex =1, add = TRUE)
+plot(st_geometry(point_sf), pch = 19, col="red", cex =0.5, add = TRUE)
+```
+
+# 8. Export Data
+
+```{r, collapse=TRUE, warning=FALSE,  message=FALSE}
+# shp
+sf::st_write(canton_freiburg_gen, "./Data_out/canton_freiburg_gen.shp", delete_layer = TRUE)
+
+# json
+path_4326 = "./Data_out/mun_join_pt_sf_freiburg_gen.json"
+file.remove(path_4326)
+sf::st_write(canton_freiburg_gen %>% st_transform(4326), path_4326, driver="GeoJSON")
+
+# tif
+raster::writeRaster(rc, filename= "./Data_out/rc.tif", format="GTiff", overwrite=TRUE)
+```
+
+# 9. Which canton has the longest border?
+
+```{r, collapse=TRUE, warning=FALSE,  message=FALSE}
+# Calculate line length
+canton_line_sf <- canton_sf %>%
+   sf::st_cast("MULTILINESTRING") %>%
+   dplyr::mutate(length_km = round(as.vector(as.vector(st_length(.)))/1000,digits = 0))
+
+canton_sf <-canton_sf %>%
+ dplyr::mutate(
+ length_km =   canton_line_sf$length_km
+  ) %>%
+ dplyr::arrange(desc(length_km))
+
+# Print result
+mapview::mapview(canton_sf,
+           map.types = c("OpenStreetMap")
+          )
+```
+
+
+
+
+
+
+

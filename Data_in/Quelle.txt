@@ -1,0 +1,7 @@
+Municipalities Dataset
+https://shop.swisstopo.admin.ch/de/products/landscape/boundaries3D
+14.02.2019
+
+Public Transportation Dataset
+https://data.geo.admin.ch/ch.bav.haltestellen-oev/data.zip
+12.09.2019
