@@ -4,8 +4,7 @@ The introductory presentation is published [here](https://docs.google.com/presen
 The R Markdown document is published as a [GitHub Page](https://statistikzh.github.io/R_AS_GIS/).
 
 # More Resources 
-GIS-Cheatsheets des Statistischen Amtes Kt. Zürich:<br>
-- Webpage: http://www.web.statistik.zh.ch/documentation/GIS_Cheatsheets/index.html <br>
+[GIS-Cheatsheets](http://www.web.statistik.zh.ch/documentation/GIS_Cheatsheets/index.html) des Statistischen Amtes Kt. Zürich:<br>
 
 
 
